@@ -9,3 +9,12 @@ To install and enable:
 
 To use in gameplay:
 - Press and hold L2, then press X to ground pass, O to lob pass.
+
+How it works:
+- When holding L2, manual pass direction is taken from left joystick, power is determined by how long X/O is pressed.
+- The DLL intercepts L2+X/O and convert back to right joystick input for PES.
+
+Caveats:
+- L2 + X/O is used for strategy change in the game, to avoid the conflict, you need to press L2 all the way down to trigger manual pass, and not-all-the-way-down for strategy change.
+- A few things can be tweaked via dinput8.cfg, but default value should work just fine.
+- If it works, change LOGGING=0 in dinput8.cfg to avoid unnecessary logs.
