@@ -23,10 +23,14 @@ int g_ButtonXIndex = 0;
 int g_ButtonOIndex = 1;
 int g_ButtonL1Index = 4;
 float g_ButtonL2Threshold = 0.9f;
+float g_RightStickThreshold = 0.5f;
 
 // LOGGING SYSTEM
 std::ofstream logFile;
 std::mutex logMutex;
+
+// Auto detected active device index, 0 means auto detection
+int activeDeviceIndex = 0;
 
 void Log(const std::string& message) {
     if (!g_Logging) return;
@@ -128,6 +132,10 @@ void LoadConfiguration() {
             g_ButtonL2Threshold = std::stof(value);
             Log("[CONFIG] Loaded ButtonL2Threshold = " + std::to_string(g_ButtonL2Threshold));
         }
+        else if (key == "RightStickThreshold") {
+            g_RightStickThreshold = std::stof(value);
+            Log("[CONFIG] Loaded RightStickThreshold = " + std::to_string(g_RightStickThreshold));
+        }
     }
     configFile.close();
     Log("[CONFIG] External configuration successfully parsed.");
@@ -181,13 +189,27 @@ public:
         // Let Windows fetch the real hardware input state first
         HRESULT hr = RealDevice->GetDeviceState(cbData, lpvData);
 
-        if (deviceIndex != g_TargetDeviceIndex) return hr;
+        // We have target device but current device isn't the desired one.
+        if (deviceIndex != activeDeviceIndex && activeDeviceIndex > 0) return hr;
 
         if (!SUCCEEDED(hr) || lpvData == nullptr || !isJoystick) return hr;
 
         if (!(cbData == sizeof(DIJOYSTATE) || cbData == sizeof(DIJOYSTATE2))) return hr;
 
         DIJOYSTATE* joyState = static_cast<DIJOYSTATE*>(lpvData);
+
+        // Detect active device if needed
+        if (activeDeviceIndex == 0) {
+            // Detect if right stick has real movement from the user
+            bool hasRealRStickInput = std::abs(joyState->lRx -32767) >=32768 * g_RightStickThreshold || std::abs(joyState->lRy - 32767) >= 32768 * g_RightStickThreshold;
+            Log("[DEBUG] device " + std::to_string(deviceIndex) + " Has real right stick input ? " + std::to_string(hasRealRStickInput) + " x = " + std::to_string(joyState->lRx) + ", y = " + std::to_string(joyState->lRy));
+            if (hasRealRStickInput) {
+                Log("[INFO] Detected active device " + std::to_string(deviceIndex));
+                activeDeviceIndex = deviceIndex;
+            }
+        }
+
+        if (activeDeviceIndex == 0) return hr;
 
         // --- CHECK IF L2 (Z+) IS PRESSED ---
         // E.g. Neutral center is 32767. If we use 45000 as a threshold 
@@ -196,10 +218,7 @@ public:
 
         Log("[DEBUG] L2 is pressed? " + std::to_string(isL2Pressed) + ". Current value: " + std::to_string(joyState->lZ) + " threshold: " + std::to_string(32767 + 32768 * g_ButtonL2Threshold));
 
-        // Right stick has real movement from the user
-        // bool hasRealRStickInput = joyState->lRx != 32767 || joyState->lRy != 32767;
-        // Log("[DEBUG] device " + std::to_string(deviceIndex) + " Has real right stick input ? " + std::to_string(hasRealRStickInput) + " x = " + std::to_string(joyState->lRx) + ", y = " + std::to_string(joyState->lRy));
-
+        
         // 1. If user has never pressed L2, we don't modify rstick. This way user can still push rstick for manual pass.
         // 2. If user pressed L2 and released now, if they don't move rstick, we don't need to reset rstick because it's already in origin.
         //    The reset of rstick will complete the previous simulated rstick move.
@@ -375,12 +394,10 @@ public:
         if (SUCCEEDED(hr) && originalDevice != nullptr) {
             // Determine if the initialized hardware device is a system joystick or mouse/keyboard
             bool isJoy = (rguid != GUID_SysKeyboard && rguid != GUID_SysMouse);
-            int assignedIndex = -1;
-            static int globalDeviceCounter = 0; // Persists across calls to count devices
+            static int globalDeviceCounter = 1; // Persists across calls to count devices
+            int assignedIndex = globalDeviceCounter;
 
-            if (isJoy) {
-                assignedIndex = globalDeviceCounter;
-
+            if (isJoy) {              
                 Log("[INFO] Game requested initialization of a Gamepad/Joystick device " + std::to_string(assignedIndex) + ".");
                 // Fetch the precise hardware instance names
                 DIDEVICEINSTANCEA di;
@@ -451,9 +468,11 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, R
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
+        Log("[INFO] Attaching proxy engine. Openning log stream.");
         DisableThreadLibraryCalls(hModule);
         InitLogging();
         LoadConfiguration();
+        activeDeviceIndex = g_TargetDeviceIndex;
         break;
     case DLL_PROCESS_DETACH:
         Log("[INFO] Detaching proxy engine. Closing log stream.");
