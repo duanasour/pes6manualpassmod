@@ -18,3 +18,4 @@ Caveats:
 - L2 + X/O is used for strategy change in the game, to avoid the conflict, you need to press L2 all the way down to trigger manual pass, and not-all-the-way-down for strategy change.
 - A few things can be tweaked via dinput8.cfg, but default value should work just fine.
 - If it works, change LOGGING=0 in dinput8.cfg to avoid unnecessary logs.
+- The controller must be in DirectInput mode.
