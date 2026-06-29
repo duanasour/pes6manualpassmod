@@ -33,6 +33,7 @@ int g_ForceManualPass = 0;
 std::ofstream logFile;
 std::mutex logMutex;
 
+int joyPadCount = 0;
 // Auto detected active device index, 0 means auto detection
 int activeDeviceIndex = 0;
 bool forceManualPass = false;
@@ -212,8 +213,20 @@ public:
         // Let Windows fetch the real hardware input state first
         HRESULT hr = RealDevice->GetDeviceState(cbData, lpvData);
 
+        if (!isJoystick) return hr;
+
+        int currentActiveDeviceIndex = activeDeviceIndex;
+        // If there is only one gamepad, it will be considered active device automatically.
+        if (joyPadCount == 1) {
+            currentActiveDeviceIndex = deviceIndex;
+            // Log("[DEBUG] Only one controller, use it as active device.");
+        }
+        
         // We have target device but current device isn't the desired one.
-        if (deviceIndex != activeDeviceIndex && activeDeviceIndex > 0) return hr;
+        if (deviceIndex != currentActiveDeviceIndex && currentActiveDeviceIndex > 0) {
+            // Log("[DEBUG] current device " + std::to_string(deviceIndex) + " isn't the desired device " + std::to_string(currentActiveDeviceIndex));
+            return hr;
+        }
 
         if (!SUCCEEDED(hr) || lpvData == nullptr || !isJoystick) return hr;
 
@@ -222,7 +235,7 @@ public:
         DIJOYSTATE* joyState = static_cast<DIJOYSTATE*>(lpvData);
 
         // Detect active device if needed
-        if (activeDeviceIndex == 0) {
+        if (currentActiveDeviceIndex == 0) {
             // Detect if right stick has real movement from the user
             bool hasRealRStickInput = std::abs(joyState->lRx - 32767) >= 32768 * g_RightStickThreshold || std::abs(joyState->lRy - 32767) >= 32768 * g_RightStickThreshold;
             // Ignore some cases where a inactive controller reports weird left stick position
@@ -233,10 +246,14 @@ public:
             if (hasRealRStickInput) {
                 Log("[INFO] Detected active device " + std::to_string(deviceIndex));
                 activeDeviceIndex = deviceIndex;
+                currentActiveDeviceIndex = deviceIndex;
             }
         }
 
-        if (activeDeviceIndex == 0) return hr;
+        if (currentActiveDeviceIndex == 0) {
+            // Log("[DEBUG] No active controller can be detected.");
+            return hr;
+        }
 
         if (g_GameVersion == 6) {
             GetDeviceState6(joyState);
@@ -521,12 +538,11 @@ public:
         if (SUCCEEDED(hr) && originalDevice != nullptr) {
             // Determine if the initialized hardware device is a system joystick or mouse/keyboard
             bool isJoy = (rguid != GUID_SysKeyboard && rguid != GUID_SysMouse);
-            static int globalDeviceCounter = 1; // Persists across calls to count devices
             int assignedIndex = -1;
 
-            if (isJoy) {       
-                assignedIndex = globalDeviceCounter;
-                globalDeviceCounter++;
+            if (isJoy) {  
+                joyPadCount++;
+                assignedIndex = joyPadCount;
                 Log("[INFO] Game requested initialization of a Gamepad/Joystick device " + std::to_string(assignedIndex) + ".");
                 // Fetch the precise hardware instance names
                 DIDEVICEINSTANCEA di;
