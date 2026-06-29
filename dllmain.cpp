@@ -24,6 +24,10 @@ int g_ButtonOIndex = 1;
 int g_ButtonL1Index = 4;
 float g_ButtonL2Threshold = 0.9f;
 float g_RightStickThreshold = 0.5f;
+int g_ButtonL2ToggleIndex = 8;
+float g_LeftStickThreshold = 0.5f;
+int g_GameVersion = 6;
+int g_ForceManualPass = 0;
 
 // LOGGING SYSTEM
 std::ofstream logFile;
@@ -31,6 +35,7 @@ std::mutex logMutex;
 
 // Auto detected active device index, 0 means auto detection
 int activeDeviceIndex = 0;
+bool forceManualPass = false;
 
 void Log(const std::string& message) {
     if (!g_Logging) return;
@@ -108,6 +113,10 @@ void LoadConfiguration() {
             g_Logging = std::stoi(value);
             Log("[CONFIG] Loaded Logging = " + std::to_string(g_Logging));
         }
+        if (key == "GameVersion") {
+            g_GameVersion = std::stoi(value);
+            Log("[CONFIG] Loaded GameVersion = " + std::to_string(g_GameVersion));
+        }
         else if (key == "TargetDeviceIndex") {
             g_TargetDeviceIndex = std::stoi(value);
             Log("[CONFIG] Loaded TargetDeviceIndex = " + std::to_string(g_TargetDeviceIndex));
@@ -135,6 +144,18 @@ void LoadConfiguration() {
         else if (key == "RightStickThreshold") {
             g_RightStickThreshold = std::stof(value);
             Log("[CONFIG] Loaded RightStickThreshold = " + std::to_string(g_RightStickThreshold));
+        }
+        else if (key == "ForceManualPass") {
+            g_ForceManualPass = std::stoi(value);
+            Log("[CONFIG] Loaded ForceManualPass = " + std::to_string(g_ForceManualPass));
+        }
+        else if (key == "ButtonL2ToggleIndex") {
+            g_ButtonL2ToggleIndex = std::stoi(value);
+            Log("[CONFIG] Loaded ButtonL2ToggleIndex = " + std::to_string(g_ButtonL2ToggleIndex));
+        }
+        else if (key == "LeftStickThreshold") {
+            g_LeftStickThreshold = std::stof(value);
+            Log("[CONFIG] Loaded LeftStickThreshold = " + std::to_string(g_LeftStickThreshold));
         }
     }
     configFile.close();
@@ -179,6 +200,8 @@ private:
     std::chrono::steady_clock::time_point buttonOPressTimes; // lob pass
     BYTE previousButtonXState = 0;
     BYTE previousButtonOState = 0;
+    BYTE previousButtonL2ToggleState = 0;
+    bool simulatingL2Press = false;
 
 public:
     MyDirectInputDevice8(IDirectInputDevice8A* original, bool joystickCheck, int index)
@@ -201,7 +224,11 @@ public:
         // Detect active device if needed
         if (activeDeviceIndex == 0) {
             // Detect if right stick has real movement from the user
-            bool hasRealRStickInput = std::abs(joyState->lRx -32767) >=32768 * g_RightStickThreshold || std::abs(joyState->lRy - 32767) >= 32768 * g_RightStickThreshold;
+            bool hasRealRStickInput = std::abs(joyState->lRx - 32767) >= 32768 * g_RightStickThreshold || std::abs(joyState->lRy - 32767) >= 32768 * g_RightStickThreshold;
+            // Ignore some cases where a inactive controller reports weird left stick position
+            if (joyState->lRx == 0 || joyState->lRx == 65535 || joyState->lRy == 0 || joyState->lRy == 65535 || joyState->lRx == joyState->lRy) {
+                hasRealRStickInput = false;
+            }
             Log("[DEBUG] device " + std::to_string(deviceIndex) + " Has real right stick input ? " + std::to_string(hasRealRStickInput) + " x = " + std::to_string(joyState->lRx) + ", y = " + std::to_string(joyState->lRy));
             if (hasRealRStickInput) {
                 Log("[INFO] Detected active device " + std::to_string(deviceIndex));
@@ -211,6 +238,110 @@ public:
 
         if (activeDeviceIndex == 0) return hr;
 
+        if (g_GameVersion == 6) {
+            GetDeviceState6(joyState);
+        }
+        else if (g_GameVersion == 11) {
+            GetDeviceState11(joyState);
+        }
+
+        return hr;
+    }
+
+    void GetDeviceState11(DIJOYSTATE* joyState) {
+        if (!g_ForceManualPass) {
+            BYTE currentButtonL2ToggleState = joyState->rgbButtons[g_ButtonL2ToggleIndex];
+
+            bool isL2TogglePressed = currentButtonL2ToggleState & 0x80;
+
+            if (currentButtonL2ToggleState != previousButtonL2ToggleState) {
+                if (isL2TogglePressed) {
+                    Log("[DEBUG] Button L2 Toggle pressed.");
+                    if (forceManualPass) forceManualPass = false; else forceManualPass = true;
+                    Log("[INFO] Force manual pass? " + std::to_string(forceManualPass));
+                }
+                else {
+                    Log("[DEBUG] Button L2 Toggle released.");
+                }
+            }
+            previousButtonL2ToggleState = currentButtonL2ToggleState;
+        }
+        else {
+            forceManualPass = true;
+        }
+
+        // Detect if left stick has real movement from the user
+        bool hasRealLeftStickInput = std::abs(joyState->lX - 32767) >= 32768 * g_LeftStickThreshold || std::abs(joyState->lY - 32767) >= 32768 * g_LeftStickThreshold;
+        
+        BYTE currentButtonXState = joyState->rgbButtons[g_ButtonXIndex];
+        BYTE currentButtonOState = joyState->rgbButtons[g_ButtonOIndex];
+
+        bool isButtonXBeingPressed = currentButtonXState & 0x80;
+        bool isButtonOBeingPressed = currentButtonOState & 0x80;
+
+        if (currentButtonXState != previousButtonXState) {
+            if (isButtonXBeingPressed) {
+                Log("[DEBUG] Button X pressed.");
+                if (hasRealLeftStickInput && forceManualPass) {
+                    Log("[DEBUG] Left stick moved, start simulating L2 press");
+                    simulatingL2Press = true;
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                }
+                else {
+                    simulatingL2Press = false;
+                }
+            }
+            else {
+                Log("[DEBUG] Button X released.");
+                if (simulatingL2Press) {
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                    Log("[DEBUG] Stop simulating L2 press");
+                }
+                simulatingL2Press = false;            
+            }
+        }
+
+        if (currentButtonOState != previousButtonOState) {
+            if (isButtonOBeingPressed) {
+                Log("[DEBUG] Button O pressed.");
+                if (hasRealLeftStickInput && forceManualPass) {
+                    Log("[DEBUG] Left stick moved, start simulating L2 press");
+                    simulatingL2Press = true;
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                }
+                else {
+                    simulatingL2Press = false;
+                }
+            }
+            else {
+                Log("[DEBUG] Button O released.");
+                if (simulatingL2Press) {
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                    Log("[DEBUG] Stop simulating L2 press");
+                }
+                simulatingL2Press = false;
+            }
+        }
+
+        if (isButtonXBeingPressed || isButtonOBeingPressed) {
+            if (simulatingL2Press) {
+                std::string buttonName = "X";
+                if (isButtonOBeingPressed) buttonName = "O";
+                Log("[DEBUG] Simulating L2 press, " + buttonName + " is being pressed");
+                // Simulate L2 press
+                joyState->lZ = 65535;
+            }
+        }
+
+        previousButtonXState = currentButtonXState;
+        previousButtonOState = currentButtonOState;
+    }
+
+    void GetDeviceState6(DIJOYSTATE* joyState) {
         // --- CHECK IF L2 (Z+) IS PRESSED ---
         // E.g. Neutral center is 32767. If we use 45000 as a threshold 
         // to detect when the trigger is pushed roughly halfway or more.
@@ -219,12 +350,8 @@ public:
         Log("[DEBUG] L2 is pressed? " + std::to_string(isL2Pressed) + ". Current value: " + std::to_string(joyState->lZ) + " threshold: " + std::to_string(32767 + 32768 * g_ButtonL2Threshold));
 
         
-        // 1. If user has never pressed L2, we don't modify rstick. This way user can still push rstick for manual pass.
-        // 2. If user pressed L2 and released now, if they don't move rstick, we don't need to reset rstick because it's already in origin.
-        //    The reset of rstick will complete the previous simulated rstick move.
-        // 3. If user pressed L2 and released now, and they are moving rstick manually. We don't change rstick value as in case 1.
         if (!isL2Pressed) {
-            return hr;
+            return;
         }
 
         // From here we either simulate a ground pass or a lob pass
@@ -325,7 +452,7 @@ public:
         if (isButtonXBeingPressed || isButtonOBeingPressed) joyState->lZ = 32767;
 
         // If X and O are not pressed, we don't change any button state so that regular PES command still works.
-        return hr;
+        return;
     }
 
     // Standard COM Boilerplate: Forward everything else directly to the system device
@@ -395,9 +522,11 @@ public:
             // Determine if the initialized hardware device is a system joystick or mouse/keyboard
             bool isJoy = (rguid != GUID_SysKeyboard && rguid != GUID_SysMouse);
             static int globalDeviceCounter = 1; // Persists across calls to count devices
-            int assignedIndex = globalDeviceCounter;
+            int assignedIndex = -1;
 
-            if (isJoy) {              
+            if (isJoy) {       
+                assignedIndex = globalDeviceCounter;
+                globalDeviceCounter++;
                 Log("[INFO] Game requested initialization of a Gamepad/Joystick device " + std::to_string(assignedIndex) + ".");
                 // Fetch the precise hardware instance names
                 DIDEVICEINSTANCEA di;
@@ -411,7 +540,6 @@ public:
             else {
                 Log("[INFO] Game requested initialization of a Mouse or Keyboard device " + std::to_string(assignedIndex) + ".");
             }
-            globalDeviceCounter++;
             // Swap the real device pointer with our custom wrapper class
             *lplpDirectInputDevice = new MyDirectInputDevice8(originalDevice, isJoy, assignedIndex);
             return DI_OK;
