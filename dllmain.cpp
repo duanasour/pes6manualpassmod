@@ -28,6 +28,14 @@ int g_ButtonL2ToggleIndex = 8;
 float g_LeftStickThreshold = 0.5f;
 int g_GameVersion = 6;
 int g_ForceManualPass = 0;
+int g_EnableAutoManualPass = 0;
+int g_EnableManualPassAltControl = 0;
+int g_EnableSprintPenalty = 0;
+int g_ButtonR1Index = 5;
+int g_SprintAllowedTime = 2000;
+int g_SprintCoolDownTime = 2000;
+float g_SprintButtonR2Threshold = 0.9f;
+
 
 // LOGGING SYSTEM
 std::ofstream logFile;
@@ -114,9 +122,17 @@ void LoadConfiguration() {
             g_Logging = std::stoi(value);
             Log("[CONFIG] Loaded Logging = " + std::to_string(g_Logging));
         }
-        if (key == "GameVersion") {
-            g_GameVersion = std::stoi(value);
-            Log("[CONFIG] Loaded GameVersion = " + std::to_string(g_GameVersion));
+        if (key == "EnableAutoManualPass") {
+            g_EnableAutoManualPass = std::stoi(value);
+            Log("[CONFIG] Loaded EnableAutoManualPass = " + std::to_string(g_EnableAutoManualPass));
+        }
+        if (key == "EnableManualPassAltControl") {
+            g_EnableManualPassAltControl = std::stoi(value);
+            Log("[CONFIG] Loaded EnableManualPassAltControl = " + std::to_string(g_EnableManualPassAltControl));
+        }
+        if (key == "EnableSprintPenalty") {
+            g_EnableSprintPenalty = std::stoi(value);
+            Log("[CONFIG] Loaded EnableSprintPenalty = " + std::to_string(g_EnableSprintPenalty));
         }
         else if (key == "TargetDeviceIndex") {
             g_TargetDeviceIndex = std::stoi(value);
@@ -158,6 +174,22 @@ void LoadConfiguration() {
             g_LeftStickThreshold = std::stof(value);
             Log("[CONFIG] Loaded LeftStickThreshold = " + std::to_string(g_LeftStickThreshold));
         }
+        else if (key == "SprintButtonR2Threshold") {
+            g_SprintButtonR2Threshold = std::stof(value);
+            Log("[CONFIG] Loaded SprintButtonR2Threshold = " + std::to_string(g_SprintButtonR2Threshold));
+        }
+        else if (key == "ButtonR1Index") {
+            g_ButtonR1Index = std::stoi(value);
+            Log("[CONFIG] Loaded ButtonR1Index = " + std::to_string(g_ButtonR1Index));
+        } 
+        else if (key == "SprintAllowedTime") {
+            g_SprintAllowedTime = std::stoi(value);
+            Log("[CONFIG] Loaded SprintAllowedTime = " + std::to_string(g_SprintAllowedTime));
+        } 
+        else if (key == "SprintCoolDownTime") {
+            g_SprintCoolDownTime = std::stoi(value);
+            Log("[CONFIG] Loaded SprintCoolDownTime = " + std::to_string(g_SprintCoolDownTime));
+        }
     }
     configFile.close();
     Log("[CONFIG] External configuration successfully parsed.");
@@ -187,22 +219,305 @@ void LoadRealDLL() {
     }
 }
 
-// ============================================================================
-// 1. DEVICE PROXY CLASS (Intercepts and Logs Controller Data)
-// ============================================================================
+class AutoManualPassHandler {
+private:
+    BYTE previousButtonXState = 0;
+    BYTE previousButtonOState = 0;
+    BYTE previousButtonL2ToggleState = 0;
+    bool simulatingL2Press = false;
+public:
+    void process(DIJOYSTATE* joyState) {
+        if (!g_ForceManualPass) {
+            BYTE currentButtonL2ToggleState = joyState->rgbButtons[g_ButtonL2ToggleIndex];
+
+            bool isL2TogglePressed = currentButtonL2ToggleState & 0x80;
+
+            if (currentButtonL2ToggleState != previousButtonL2ToggleState) {
+                if (isL2TogglePressed) {
+                    Log("[DEBUG] Button L2 Toggle pressed.");
+                    if (forceManualPass) forceManualPass = false; else forceManualPass = true;
+                    Log("[INFO] Force manual pass? " + std::to_string(forceManualPass));
+                }
+                else {
+                    Log("[DEBUG] Button L2 Toggle released.");
+                }
+            }
+            previousButtonL2ToggleState = currentButtonL2ToggleState;
+        }
+        else {
+            forceManualPass = true;
+        }
+
+        // Detect if left stick has real movement from the user
+        bool hasRealLeftStickInput = std::abs(joyState->lX - 32767) >= 32768 * g_LeftStickThreshold || std::abs(joyState->lY - 32767) >= 32768 * g_LeftStickThreshold;
+
+        BYTE currentButtonXState = joyState->rgbButtons[g_ButtonXIndex];
+        BYTE currentButtonOState = joyState->rgbButtons[g_ButtonOIndex];
+
+        bool isButtonXBeingPressed = currentButtonXState & 0x80;
+        bool isButtonOBeingPressed = currentButtonOState & 0x80;
+
+        if (currentButtonXState != previousButtonXState) {
+            if (isButtonXBeingPressed) {
+                Log("[DEBUG] Button X pressed.");
+                if (hasRealLeftStickInput && forceManualPass) {
+                    Log("[DEBUG] Left stick moved, start simulating L2 press");
+                    simulatingL2Press = true;
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                }
+                else {
+                    simulatingL2Press = false;
+                }
+            }
+            else {
+                Log("[DEBUG] Button X released.");
+                if (simulatingL2Press) {
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                    Log("[DEBUG] Stop simulating L2 press");
+                }
+                simulatingL2Press = false;
+            }
+        }
+
+        if (currentButtonOState != previousButtonOState) {
+            if (isButtonOBeingPressed) {
+                Log("[DEBUG] Button O pressed.");
+                if (hasRealLeftStickInput && forceManualPass) {
+                    Log("[DEBUG] Left stick moved, start simulating L2 press");
+                    simulatingL2Press = true;
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                }
+                else {
+                    simulatingL2Press = false;
+                }
+            }
+            else {
+                Log("[DEBUG] Button O released.");
+                if (simulatingL2Press) {
+                    // Simulate L2 press
+                    joyState->lZ = 65535;
+                    Log("[DEBUG] Stop simulating L2 press");
+                }
+                simulatingL2Press = false;
+            }
+        }
+
+        if (isButtonXBeingPressed || isButtonOBeingPressed) {
+            if (simulatingL2Press) {
+                std::string buttonName = "X";
+                if (isButtonOBeingPressed) buttonName = "O";
+                Log("[DEBUG] Simulating L2 press, " + buttonName + " is being pressed");
+                // Simulate L2 press
+                joyState->lZ = 65535;
+            }
+        }
+
+        previousButtonXState = currentButtonXState;
+        previousButtonOState = currentButtonOState;
+    }
+};
+
+class ManualPassAltControlHandler {
+private:
+    // Stores the exact timestamp when a button was pressed
+    std::chrono::steady_clock::time_point buttonXPressTimes; // ground pass
+    std::chrono::steady_clock::time_point buttonOPressTimes; // lob pass
+    BYTE previousButtonXState = 0;
+    BYTE previousButtonOState = 0;
+public:
+    void process(DIJOYSTATE* joyState) {
+        // --- CHECK IF L2 (Z+) IS PRESSED ---
+        // E.g. Neutral center is 32767. If we use 45000 as a threshold 
+        // to detect when the trigger is pushed roughly halfway or more.
+        bool isL2Pressed = (joyState->lZ > 32767 + 32768 * g_ButtonL2Threshold);
+
+        Log("[DEBUG] L2 is pressed? " + std::to_string(isL2Pressed) + ". Current value: " + std::to_string(joyState->lZ) + " threshold: " + std::to_string(32767 + 32768 * g_ButtonL2Threshold));
+
+
+        if (!isL2Pressed) {
+            return;
+        }
+
+        // From here we either simulate a ground pass or a lob pass
+        BYTE currentButtonXState = joyState->rgbButtons[g_ButtonXIndex];
+        BYTE currentButtonOState = joyState->rgbButtons[g_ButtonOIndex];
+
+        bool isButtonXBeingPressed = currentButtonXState & 0x80;
+        bool isButtonOBeingPressed = currentButtonOState & 0x80;
+
+        if (currentButtonXState != previousButtonXState) {
+            if (isButtonXBeingPressed) {
+                Log("[DEBUG] Button X pressed.");
+                buttonXPressTimes = std::chrono::steady_clock::now();
+                // Reset L1 because we are simulating a ground pass
+                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
+            }
+            else {
+                Log("[DEBUG] Button X released.");
+                // Reset rstick
+                joyState->lRx = 32767;
+                joyState->lRy = 32767;
+                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
+            }
+        }
+
+        if (currentButtonOState != previousButtonOState) {
+            if (isButtonOBeingPressed) {
+                Log("[DEBUG] Button O pressed.");
+                buttonOPressTimes = std::chrono::steady_clock::now();
+                // Press L1 because we are simulating a lob pass
+                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
+            }
+            else {
+                Log("[DEBUG] Button O released.");
+                // Reset rstick
+                joyState->lRx = 32767;
+                joyState->lRy = 32767;
+                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
+            }
+        }
+
+        if (isButtonXBeingPressed || isButtonOBeingPressed) {
+            auto currentTime = std::chrono::steady_clock::now();
+
+            // Calculate duration in milliseconds
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - buttonXPressTimes).count();
+            if (isButtonOBeingPressed) {
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - buttonOPressTimes).count();
+            }
+            if (duration > g_PassGaugeFillupTime) duration = g_PassGaugeFillupTime;
+            Log("[DEBUG] Button press duration " + std::to_string(duration));
+
+            // Set rstick position based on lstick angle and button A press duration
+
+            // 1. Get current physical normalized coordinates
+            float lx = (static_cast<float>(joyState->lX) - 32767.0f) / 32767.0f;
+            float ly = ((static_cast<float>(joyState->lY) - 32767.0f) / 32767.0f) * -1.0f;
+            // 2. Calculate current angle
+            float radians = std::atan2(ly, lx);
+            // 3. Target rstick radius based on button A press duration
+            float targetRadius = static_cast<float>(duration) / static_cast<float>(g_PassGaugeFillupTime);
+            // 4. Calculate new normalized coordinates matching the exact same angle
+            float newLxNorm = targetRadius * std::cos(radians);
+            float newLyNorm = targetRadius * std::sin(radians);
+            // 5. Convert back to raw DirectInput values (0 to 65535)
+            LONG rawNewX = static_cast<LONG>((newLxNorm * 32767.0f) + 32767.0f);
+            LONG rawNewY = static_cast<LONG>((-newLyNorm * 32767.0f) + 32767.0f); // Note the negative sign for inverted Y
+
+            // 6. Clamp values strictly to hardware boundaries just to prevent overflows
+            if (rawNewX < 0) rawNewX = 0;
+            if (rawNewX > 65535) rawNewX = 65535;
+            if (rawNewY < 0) rawNewY = 0;
+            if (rawNewY > 65535) rawNewY = 65535;
+
+            // 7. Inject the modified values for rstick
+            joyState->lRx = rawNewX;
+            joyState->lRy = rawNewY;
+            Log("[DEBUG] Simulating Right stick: x=" + std::to_string(rawNewX) + ", y=" + std::to_string(rawNewY) + ", angle=" + std::to_string(radians));
+
+            if (isButtonXBeingPressed) {
+                // Also reset L1 because we are simulating a ground pass
+                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
+            }
+            else if (isButtonOBeingPressed) {
+                // Press L1 for a lob pass
+                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
+            }
+        }
+
+        previousButtonXState = currentButtonXState;
+        previousButtonOState = currentButtonOState;
+
+        // Reset button X and O if needed because we are simulating rstick
+        if (isButtonXBeingPressed) joyState->rgbButtons[g_ButtonXIndex] = 0x00;
+        if (isButtonOBeingPressed) joyState->rgbButtons[g_ButtonOIndex] = 0x00;
+
+        // Reset L2 as well, otherwise rstick pass won't be triggered by the game.
+        if (isButtonXBeingPressed || isButtonOBeingPressed) joyState->lZ = 32767;
+
+        // If X and O are not pressed, we don't change any button state so that regular PES command still works.
+        return;
+    }
+};
+
+class SprintPenaltyHandler {
+private:
+    bool previouslySprintButtonPressed = false;
+    std::chrono::steady_clock::time_point sprintStartTime;
+    std::chrono::steady_clock::time_point sprintCoolDownStartTime;
+    bool ignoreSprint = false;
+
+public:
+    void process(DIJOYSTATE* joyState) {
+        bool currentlySprintButtonPressed = false;
+        // If R2 threshold exists, consider R2 as sprint button instead of default R1.
+        if (g_SprintButtonR2Threshold > 0) {
+            currentlySprintButtonPressed = (joyState->lZ < 32767 - 32768 * g_SprintButtonR2Threshold);
+        }
+        else {
+            BYTE currentR1State = joyState->rgbButtons[g_ButtonR1Index];
+            currentlySprintButtonPressed = currentR1State & 0x80;
+        }
+
+        auto currentTime = std::chrono::steady_clock::now();
+        // Calculate duration in milliseconds
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - sprintCoolDownStartTime).count();
+        
+        bool isCoolingDown = duration < g_SprintCoolDownTime;
+
+        if (currentlySprintButtonPressed != previouslySprintButtonPressed) {
+            if (currentlySprintButtonPressed) {
+                Log("[DEBUG] Button sprint pressed.");
+                if (isCoolingDown) {
+                    ignoreSprint = true;
+                    Log("[DEBUG] Still cooling down, ignore sprint button press.");
+                }
+                else {
+                    sprintStartTime = currentTime;
+                    ignoreSprint = false;
+                }
+            }
+            else {
+                Log("[DEBUG] Button sprint released.");
+            }
+        }
+
+        if (currentlySprintButtonPressed && !ignoreSprint) {
+            auto sprintDuration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - sprintStartTime).count();
+            bool isAllowed = sprintDuration < g_SprintAllowedTime;
+            if (!isAllowed) {
+                sprintCoolDownStartTime = currentTime;
+                ignoreSprint = true;
+                Log("[DEBUG] Reached max sprint allowed time.");
+            }
+        }
+
+        if (ignoreSprint) {
+            if (g_SprintButtonR2Threshold > 0) {
+                joyState->lZ = 32767;
+            }
+            else {
+                joyState->rgbButtons[g_ButtonR1Index] = 0x00;
+            }
+        }
+
+        previouslySprintButtonPressed = currentlySprintButtonPressed;
+    }
+};
+
+// DEVICE PROXY CLASS (Intercepts and Logs Controller Data)
 class MyDirectInputDevice8 : public IDirectInputDevice8A {
 private:
     IDirectInputDevice8A* RealDevice;
     bool isJoystick = false;
     int deviceIndex = -1;
     
-    // Stores the exact timestamp when a button was pressed
-    std::chrono::steady_clock::time_point buttonXPressTimes; // ground pass
-    std::chrono::steady_clock::time_point buttonOPressTimes; // lob pass
-    BYTE previousButtonXState = 0;
-    BYTE previousButtonOState = 0;
-    BYTE previousButtonL2ToggleState = 0;
-    bool simulatingL2Press = false;
+    AutoManualPassHandler autoManualPassHandler;
+    ManualPassAltControlHandler manualPassAltControlHandler;
+    SprintPenaltyHandler sprintPenaltyHandler;
 
 public:
     MyDirectInputDevice8(IDirectInputDevice8A* original, bool joystickCheck, int index)
@@ -255,221 +570,17 @@ public:
             return hr;
         }
 
-        if (g_GameVersion == 6) {
-            GetDeviceState6(joyState);
+        if (g_EnableAutoManualPass) {
+            autoManualPassHandler.process(joyState);
         }
-        else if (g_GameVersion == 11) {
-            GetDeviceState11(joyState);
+        if (g_EnableManualPassAltControl) {
+            manualPassAltControlHandler.process(joyState);
+        }
+        if (g_EnableSprintPenalty) {
+            sprintPenaltyHandler.process(joyState);
         }
 
         return hr;
-    }
-
-    void GetDeviceState11(DIJOYSTATE* joyState) {
-        if (!g_ForceManualPass) {
-            BYTE currentButtonL2ToggleState = joyState->rgbButtons[g_ButtonL2ToggleIndex];
-
-            bool isL2TogglePressed = currentButtonL2ToggleState & 0x80;
-
-            if (currentButtonL2ToggleState != previousButtonL2ToggleState) {
-                if (isL2TogglePressed) {
-                    Log("[DEBUG] Button L2 Toggle pressed.");
-                    if (forceManualPass) forceManualPass = false; else forceManualPass = true;
-                    Log("[INFO] Force manual pass? " + std::to_string(forceManualPass));
-                }
-                else {
-                    Log("[DEBUG] Button L2 Toggle released.");
-                }
-            }
-            previousButtonL2ToggleState = currentButtonL2ToggleState;
-        }
-        else {
-            forceManualPass = true;
-        }
-
-        // Detect if left stick has real movement from the user
-        bool hasRealLeftStickInput = std::abs(joyState->lX - 32767) >= 32768 * g_LeftStickThreshold || std::abs(joyState->lY - 32767) >= 32768 * g_LeftStickThreshold;
-        
-        BYTE currentButtonXState = joyState->rgbButtons[g_ButtonXIndex];
-        BYTE currentButtonOState = joyState->rgbButtons[g_ButtonOIndex];
-
-        bool isButtonXBeingPressed = currentButtonXState & 0x80;
-        bool isButtonOBeingPressed = currentButtonOState & 0x80;
-
-        if (currentButtonXState != previousButtonXState) {
-            if (isButtonXBeingPressed) {
-                Log("[DEBUG] Button X pressed.");
-                if (hasRealLeftStickInput && forceManualPass) {
-                    Log("[DEBUG] Left stick moved, start simulating L2 press");
-                    simulatingL2Press = true;
-                    // Simulate L2 press
-                    joyState->lZ = 65535;
-                }
-                else {
-                    simulatingL2Press = false;
-                }
-            }
-            else {
-                Log("[DEBUG] Button X released.");
-                if (simulatingL2Press) {
-                    // Simulate L2 press
-                    joyState->lZ = 65535;
-                    Log("[DEBUG] Stop simulating L2 press");
-                }
-                simulatingL2Press = false;            
-            }
-        }
-
-        if (currentButtonOState != previousButtonOState) {
-            if (isButtonOBeingPressed) {
-                Log("[DEBUG] Button O pressed.");
-                if (hasRealLeftStickInput && forceManualPass) {
-                    Log("[DEBUG] Left stick moved, start simulating L2 press");
-                    simulatingL2Press = true;
-                    // Simulate L2 press
-                    joyState->lZ = 65535;
-                }
-                else {
-                    simulatingL2Press = false;
-                }
-            }
-            else {
-                Log("[DEBUG] Button O released.");
-                if (simulatingL2Press) {
-                    // Simulate L2 press
-                    joyState->lZ = 65535;
-                    Log("[DEBUG] Stop simulating L2 press");
-                }
-                simulatingL2Press = false;
-            }
-        }
-
-        if (isButtonXBeingPressed || isButtonOBeingPressed) {
-            if (simulatingL2Press) {
-                std::string buttonName = "X";
-                if (isButtonOBeingPressed) buttonName = "O";
-                Log("[DEBUG] Simulating L2 press, " + buttonName + " is being pressed");
-                // Simulate L2 press
-                joyState->lZ = 65535;
-            }
-        }
-
-        previousButtonXState = currentButtonXState;
-        previousButtonOState = currentButtonOState;
-    }
-
-    void GetDeviceState6(DIJOYSTATE* joyState) {
-        // --- CHECK IF L2 (Z+) IS PRESSED ---
-        // E.g. Neutral center is 32767. If we use 45000 as a threshold 
-        // to detect when the trigger is pushed roughly halfway or more.
-        bool isL2Pressed = (joyState->lZ > 32767 + 32768 * g_ButtonL2Threshold);
-
-        Log("[DEBUG] L2 is pressed? " + std::to_string(isL2Pressed) + ". Current value: " + std::to_string(joyState->lZ) + " threshold: " + std::to_string(32767 + 32768 * g_ButtonL2Threshold));
-
-        
-        if (!isL2Pressed) {
-            return;
-        }
-
-        // From here we either simulate a ground pass or a lob pass
-        BYTE currentButtonXState = joyState->rgbButtons[g_ButtonXIndex];
-        BYTE currentButtonOState = joyState->rgbButtons[g_ButtonOIndex];
-
-        bool isButtonXBeingPressed = currentButtonXState & 0x80;
-        bool isButtonOBeingPressed = currentButtonOState & 0x80;
-
-        if (currentButtonXState != previousButtonXState) {
-            if (isButtonXBeingPressed) {
-                Log("[DEBUG] Button X pressed.");
-                buttonXPressTimes = std::chrono::steady_clock::now();
-                // Reset L1 because we are simulating a ground pass
-                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
-            }
-            else {
-                Log("[DEBUG] Button X released.");
-                // Reset rstick
-                joyState->lRx = 32767;
-                joyState->lRy = 32767;
-                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
-            }
-        } 
-        
-        if (currentButtonOState != previousButtonOState) {
-            if (isButtonOBeingPressed) {
-                Log("[DEBUG] Button O pressed.");
-                buttonOPressTimes = std::chrono::steady_clock::now();
-                // Press L1 because we are simulating a lob pass
-                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
-            }
-            else {
-                Log("[DEBUG] Button O released.");
-                // Reset rstick
-                joyState->lRx = 32767;
-                joyState->lRy = 32767;
-                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
-            }
-        }
-
-       if (isButtonXBeingPressed || isButtonOBeingPressed) {
-            auto currentTime = std::chrono::steady_clock::now();
-
-            // Calculate duration in milliseconds
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - buttonXPressTimes).count();
-            if (isButtonOBeingPressed) {
-                duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - buttonOPressTimes).count();
-            }
-            if (duration > g_PassGaugeFillupTime) duration = g_PassGaugeFillupTime;
-            Log("[DEBUG] Button press duration " + std::to_string(duration));
-
-            // Set rstick position based on lstick angle and button A press duration
-            
-            // 1. Get current physical normalized coordinates
-            float lx = (static_cast<float>(joyState->lX) - 32767.0f) / 32767.0f;
-            float ly = ((static_cast<float>(joyState->lY) - 32767.0f) / 32767.0f) * -1.0f;
-            // 2. Calculate current angle
-            float radians = std::atan2(ly, lx);
-            // 3. Target rstick radius based on button A press duration
-            float targetRadius = static_cast<float>(duration) / static_cast<float>(g_PassGaugeFillupTime);
-            // 4. Calculate new normalized coordinates matching the exact same angle
-            float newLxNorm = targetRadius * std::cos(radians);
-            float newLyNorm = targetRadius * std::sin(radians);
-            // 5. Convert back to raw DirectInput values (0 to 65535)
-            LONG rawNewX = static_cast<LONG>((newLxNorm * 32767.0f) + 32767.0f);
-            LONG rawNewY = static_cast<LONG>((-newLyNorm * 32767.0f) + 32767.0f); // Note the negative sign for inverted Y
-
-            // 6. Clamp values strictly to hardware boundaries just to prevent overflows
-            if (rawNewX < 0) rawNewX = 0;
-            if (rawNewX > 65535) rawNewX = 65535;
-            if (rawNewY < 0) rawNewY = 0;
-            if (rawNewY > 65535) rawNewY = 65535;
-
-            // 7. Inject the modified values for rstick
-            joyState->lRx = rawNewX;
-            joyState->lRy = rawNewY;
-            Log("[DEBUG] Simulating Right stick: x=" + std::to_string(rawNewX) + ", y=" + std::to_string(rawNewY) + ", angle=" + std::to_string(radians));
-
-            if (isButtonXBeingPressed) {
-                // Also reset L1 because we are simulating a ground pass
-                joyState->rgbButtons[g_ButtonL1Index] = 0x00;
-            }
-            else if (isButtonOBeingPressed) {
-                // Press L1 for a lob pass
-                joyState->rgbButtons[g_ButtonL1Index] = 0x80;
-            }
-        }
-
-        previousButtonXState = currentButtonXState;
-        previousButtonOState = currentButtonOState;
-
-        // Reset button X and O if needed because we are simulating rstick
-        if (isButtonXBeingPressed) joyState->rgbButtons[g_ButtonXIndex] = 0x00;
-        if (isButtonOBeingPressed) joyState->rgbButtons[g_ButtonOIndex] = 0x00;
-
-        // Reset L2 as well, otherwise rstick pass won't be triggered by the game.
-        if (isButtonXBeingPressed || isButtonOBeingPressed) joyState->lZ = 32767;
-
-        // If X and O are not pressed, we don't change any button state so that regular PES command still works.
-        return;
     }
 
     // Standard COM Boilerplate: Forward everything else directly to the system device
@@ -520,9 +631,7 @@ public:
     }
 };
 
-// ============================================================================
-// 2. INTERFACE PROXY CLASS (Intercepts device provisioning requests)
-// ============================================================================
+// INTERFACE PROXY CLASS (Intercepts device provisioning requests)
 class MyDirectInput8 : public IDirectInput8A {
 private:
     IDirectInput8A* RealInput;
@@ -580,9 +689,7 @@ public:
     STDMETHODIMP ConfigureDevices(LPDICONFIGUREDEVICESCALLBACK lpdiCallback, LPDICONFIGUREDEVICESPARAMSA lpdiParams, DWORD dwFlags, LPVOID pvRef) override { return RealInput->ConfigureDevices(lpdiCallback, lpdiParams, dwFlags, pvRef); }
 };
 
-// ============================================================================
-// 3. MAIN EXPORTED DLL HOOK (The entry point called by PES6)
-// ============================================================================
+// MAIN EXPORTED DLL HOOK (The entry point called by PES6)
 extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut, LPUNKNOWN punkOuter) {
     Log("[INFO] Game execution reached proxy DirectInput8Create hook.");
 
